@@ -8,46 +8,81 @@
 <title>Odak müziği</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
+  iframe, #player { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
   p { margin: 0; position: fixed; inset: 0; display: grid; place-items: center; color: #8a90b0; font: 14px system-ui, sans-serif; text-align: center; padding: 16px; }
 </style>
 </head>
 <body>
+<div id="player"></div>
 <script>
 // A tiny YouTube player page for the "Çalışma Paneli" dashboard.
 // The dashboard is opened as a local file, which YouTube refuses to play in
 // (error 153: no referrer). Embedded from this real web address, the player
 // works. Nothing is stored here; the video comes in the address:
 //   ?v=VIDEO_ID  &list=PLAYLIST_ID  &start=SECONDS
+// When YouTube refuses a video (for example its owner turned off playing
+// on other sites), the page tells the dashboard, which then offers to open
+// it on YouTube instead.
 (function () {
   var q = new URLSearchParams(location.search);
   var ok = function (s) { return s && /^[\w-]{6,64}$/.test(s) ? s : null; };
   var v = ok(q.get("v")), list = ok(q.get("list"));
-  var start = /^\d{1,6}$/.test(q.get("start") || "") ? q.get("start") : "";
+  var start = /^\d{1,6}$/.test(q.get("start") || "") ? +q.get("start") : 0;
   if (!v && !list) {
     var p = document.createElement("p");
     p.textContent = "Çalışma Paneli için YouTube oynatıcısı.";
     document.body.appendChild(p);
     return;
   }
-  var params = new URLSearchParams({ autoplay: "1", playsinline: "1", rel: "0", modestbranding: "1" });
-  if (start) params.set("start", start);
-  var path;
-  if (v) {
-    path = "embed/" + v;
-    if (list) params.set("list", list);
-    else { params.set("loop", "1"); params.set("playlist", v); }
-  } else {
-    path = "embed/videoseries";
-    params.set("list", list);
+  function tell(type, extra) {
+    if (window.parent === window) return;
+    var msg = { source: "odak-muzik", type: type };
+    for (var k in extra) msg[k] = extra[k];
+    try { window.parent.postMessage(msg, "*"); } catch (e) {}
   }
-  var f = document.createElement("iframe");
-  f.src = "https://www.youtube-nocookie.com/" + path + "?" + params.toString();
-  f.title = "YouTube";
-  f.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
-  f.setAttribute("allowfullscreen", "");
-  f.referrerPolicy = "strict-origin-when-cross-origin";
-  document.body.appendChild(f);
+  var vars = { autoplay: 1, playsinline: 1, rel: 0, modestbranding: 1 };
+  if (start) vars.start = start;
+  if (v && list) vars.list = list;
+  else if (v) { vars.loop = 1; vars.playlist = v; }
+  else { vars.listType = "playlist"; vars.list = list; }
+
+  // Plain embed, used if YouTube's player script does not load.
+  var started = false;
+  function plain() {
+    if (started) return;
+    started = true;
+    var params = new URLSearchParams();
+    Object.keys(vars).forEach(function (k) { params.set(k, vars[k]); });
+    var f = document.createElement("iframe");
+    f.src = "https://www.youtube-nocookie.com/embed/" + (v || "videoseries") + "?" + params.toString();
+    f.title = "YouTube";
+    f.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+    f.setAttribute("allowfullscreen", "");
+    f.referrerPolicy = "strict-origin-when-cross-origin";
+    var holder = document.getElementById("player");
+    holder.parentNode.replaceChild(f, holder);
+  }
+  window.onYouTubeIframeAPIReady = function () {
+    if (started) return;
+    started = true;
+    new YT.Player("player", {
+      host: "https://www.youtube-nocookie.com",
+      videoId: v || undefined,
+      playerVars: vars,
+      events: {
+        onReady: function (e) { tell("ready"); try { e.target.playVideo(); } catch (err) {} },
+        onStateChange: function (e) { if (e.data === 1) tell("playing"); },
+        // 2 bad link, 5 cannot play here, 100 removed or private,
+        // 101 / 150 the owner does not allow playing on other sites
+        onError: function (e) { tell("error", { code: e.data }); }
+      }
+    });
+  };
+  var s = document.createElement("script");
+  s.src = "https://www.youtube.com/iframe_api";
+  s.onerror = plain;
+  document.head.appendChild(s);
+  setTimeout(plain, 6000);
 })();
 </script>
 </body>
