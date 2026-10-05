@@ -40,7 +40,7 @@
     for (var k in extra) msg[k] = extra[k];
     try { window.parent.postMessage(msg, "*"); } catch (e) {}
   }
-  var vars = { autoplay: 1, playsinline: 1, rel: 0, modestbranding: 1 };
+  var vars = { autoplay: 1, playsinline: 1, rel: 0, modestbranding: 1, enablejsapi: 1 };
   if (start) vars.start = start;
   if (v && list) vars.list = list;
   else if (v) { vars.loop = 1; vars.playlist = v; }
@@ -48,6 +48,8 @@
 
   // Plain embed, used if YouTube's player script does not load.
   var started = false;
+  var api = null;        // YT.Player, when the script loads
+  var plainFrame = null; // fallback <iframe>, controlled with YouTube's postMessage API
   function plain() {
     if (started) return;
     started = true;
@@ -61,7 +63,36 @@
     f.referrerPolicy = "strict-origin-when-cross-origin";
     var holder = document.getElementById("player");
     holder.parentNode.replaceChild(f, holder);
+    plainFrame = f;
   }
+
+  // ---- The dashboard can pause and resume the music (media keys, the
+  // ---- player's own button). Commands come as postMessage; every state
+  // ---- change is reported back so the button stays in step.
+  function command(what) {
+    if (api) {
+      try {
+        if (what === "pause") api.pauseVideo();
+        else if (what === "play") api.playVideo();
+        else if (what === "toggle") {
+          (api.getPlayerState && api.getPlayerState() === 1) ? api.pauseVideo() : api.playVideo();
+        }
+      } catch (e) {}
+      return;
+    }
+    if (plainFrame && plainFrame.contentWindow) {
+      var fn = what === "pause" ? "pauseVideo" : "playVideo";
+      try {
+        plainFrame.contentWindow.postMessage(
+          JSON.stringify({ event: "command", func: fn, args: [] }), "*");
+      } catch (e) {}
+    }
+  }
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (!d || d.source !== "calisma-paneli" || !d.type) return;
+    command(d.type);
+  });
   window.onYouTubeIframeAPIReady = function () {
     if (started) return;
     started = true;
@@ -70,8 +101,12 @@
       videoId: v || undefined,
       playerVars: vars,
       events: {
-        onReady: function (e) { tell("ready"); try { e.target.playVideo(); } catch (err) {} },
-        onStateChange: function (e) { if (e.data === 1) tell("playing"); },
+        onReady: function (e) { api = e.target; tell("ready"); try { e.target.playVideo(); } catch (err) {} },
+        onStateChange: function (e) {
+          if (e.data === 1) tell("playing");
+          else if (e.data === 2) tell("paused");
+          else if (e.data === 0) tell("ended");
+        },
         // 2 bad link, 5 cannot play here, 100 removed or private,
         // 101 / 150 the owner does not allow playing on other sites
         onError: function (e) { tell("error", { code: e.data }); }
